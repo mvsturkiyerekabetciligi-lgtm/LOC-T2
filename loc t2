@@ -471,9 +471,21 @@ function Get-TamperLogEvents {
     return $events
 }
 
-# SESSIZ - hiçbir şey yazmaz
+# ===============================
+# MONITOR ALERT - NORMAL UYGULAMALARI GÖSTERİR
+# ===============================
 function Write-MonitorAlert {
-    param([string]$Message, [string]$LogFile, [string]$Color = 'White')
+    param(
+        [string]$Message,
+        [string]$LogFile,
+        [string]$Color = 'Yellow'
+    )
+    # Sadece Started / Exited mesajlarını göster
+    if ($Message -like 'Started*' -or $Message -like 'Exited*') {
+        $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+        Write-Host "[$timestamp] $Message" -ForegroundColor $Color
+        try { [Console]::Out.Flush() } catch {}
+    }
 }
 
 function Convert-UserAssistName {
@@ -649,55 +661,174 @@ function Get-ProcessSnapshot {
     return $snap
 }
 
+# ===============================
+# GÜNCELLENDİ: Açılan uygulamaları gösterir
+# ===============================
 function Update-ProcessChangeMonitor {
     param([hashtable]$Previous, [hashtable]$Current, [hashtable]$Watched, [string]$LogFile)
+
+    # Yeni açılan process'ler
     foreach ($procId in $Current.Keys) {
         if ($Previous.ContainsKey($procId)) { continue }
+
         $proc = $Current[$procId]
-        if ($proc.Silent) { continue }
+        if ($proc.Silent) { continue }  # kopya2 klasörü sessiz
+
         if ($proc.Suspicious) { $Watched[$procId] = $proc }
         elseif ($proc.UserLand) { $Watched[$procId] = $proc }
+
+        # Sadece UserLand veya Suspicious olanları göster
+        if (-not $proc.Suspicious -and -not $proc.UserLand) { continue }
+
+        $label = "$($proc.Name) (PID $procId)"
+        if ($proc.Path) { $label += " -> $($proc.Path)" }
+
+        $tags = @($proc.Reasons | Where-Object { $_ -ne 'no image path' })
+        if ($tags.Count -gt 0) {
+            Write-MonitorAlert -Message "Started [$($tags -join ', ')]: $label" -LogFile $LogFile -Color Yellow
+        } else {
+            Write-MonitorAlert -Message "Started: $label" -LogFile $LogFile -Color Yellow
+        }
     }
+
+    # Kapanan process'ler
     foreach ($procId in $Previous.Keys) {
         if ($Current.ContainsKey($procId)) { continue }
+        if (-not $Watched.ContainsKey($procId)) { continue }
+
         $proc = $Previous[$procId]
         if ($proc.Silent) { continue }
-        if (-not $proc.Suspicious -and -not $proc.UserLand -and -not $Watched.ContainsKey($procId)) { continue }
-        if ($Watched.ContainsKey($procId)) { $Watched.Remove($procId) | Out-Null }
+
+        $label = "$($proc.Name) (PID $procId)"
+        if ($proc.Path) { $label += " -> $($proc.Path)" }
+
+        $tags = @($proc.Reasons | Where-Object { $_ -ne 'no image path' })
+        if ($tags.Count -gt 0) {
+            Write-MonitorAlert -Message "Exited [$($tags -join ', ')]: $label" -LogFile $LogFile -Color Yellow
+        } else {
+            Write-MonitorAlert -Message "Exited: $label" -LogFile $LogFile -Color Yellow
+        }
+        $Watched.Remove($procId) | Out-Null
     }
 }
 
 # ===============================
-# SESSIZ TEMİZLİK FONKSİYONLARI
+# GÜÇLENDİRİLMİŞ BAM TEMİZLİĞİ
 # ===============================
-
 function Clear-BamKeywords {
-    $bamCleanKeywords = @('xeno', 'tc1', 'tc2', 'tc3', 'tc', 'cheat', 'matcha', 'isabelle', 'severe', 'matrix', 'clarity', 'loader', 'photon', 'valex', 'aimmy', 'keyauth', 'melatonin', 'evolve', 'serotonin', 'dx9ware', 'unicore', 'monolith', 'skript', 'ntfsdump', 'atlanta', 'eulen', 'hammafia', 'redengine', 'susano', 'bypass')
-    try {
-        $bamRoots = @(
-            'HKLM:\SYSTEM\CurrentControlSet\Services\bam\State\UserSettings',
-            'HKLM:\SYSTEM\CurrentControlSet\Services\dam\State\UserSettings'
-        )
-        foreach ($root in $bamRoots) {
-            if (-not (Test-Path $root)) { continue }
-            Get-ChildItem $root -ErrorAction SilentlyContinue | ForEach-Object {
-                $sidKey = $_
-                if ($sidKey.PSChildName -eq 'S-1-5-18') { return }
-                $props = Get-ItemProperty -Path $sidKey.PSPath -ErrorAction SilentlyContinue
-                if (-not $props) { return }
-                foreach ($prop in $props.PSObject.Properties) {
-                    if ($prop.Name -match '^(PSPath|PSParentPath|PSChildName|PSDrive|PSProvider)$') { continue }
-                    $valLower = $prop.Name.ToLower()
+    $bamCleanKeywords = @(
+        'xeno', 'tc1', 'tc2', 'tc3', 'tc1.exe', 'tc2.exe', 'tc3.exe',
+        'cheat', 'matcha', 'isabelle', 'severe', 'matrix', 'clarity',
+        'loader', 'photon', 'valex', 'aimmy', 'keyauth', 'melatonin',
+        'evolve', 'serotonin', 'dx9ware', 'unicore', 'monolith',
+        'skript', 'ntfsdump', 'atlanta', 'eulen', 'hammafia',
+        'redengine', 'susano', 'bypass', 'kopya2', 'build_clean'
+    )
+
+    $bamRoots = @(
+        'SYSTEM\CurrentControlSet\Services\bam\State\UserSettings',
+        'SYSTEM\CurrentControlSet\Services\dam\State\UserSettings',
+        'SYSTEM\CurrentControlSet\Services\bam\UserSettings',
+        'SYSTEM\CurrentControlSet\Services\dam\UserSettings'
+    )
+
+    $deletedCount = 0
+
+    foreach ($root in $bamRoots) {
+        try {
+            $base = [Microsoft.Win32.RegistryKey]::OpenBaseKey(
+                [Microsoft.Win32.RegistryHive]::LocalMachine,
+                [Microsoft.Win32.RegistryView]::Registry64
+            )
+            $rootKey = $base.OpenSubKey($root, $true)
+            if (-not $rootKey) { continue }
+
+            foreach ($sidName in $rootKey.GetSubKeyNames()) {
+                if ($sidName -eq 'S-1-5-18') { continue }
+
+                $sidKey = $rootKey.OpenSubKey($sidName, $true)
+                if (-not $sidKey) { continue }
+
+                $valueNames = $sidKey.GetValueNames()
+                foreach ($valueName in $valueNames) {
+                    $valLower = $valueName.ToLower()
+                    $match = $false
+
                     foreach ($kw in $bamCleanKeywords) {
                         if ($valLower -like "*$kw*") {
-                            Remove-ItemProperty -Path $sidKey.PSPath -Name $prop.Name -Force -ErrorAction SilentlyContinue
+                            $match = $true
                             break
                         }
+                    }
+
+                    if ($match) {
+                        try {
+                            $sidKey.DeleteValue($valueName, $false)
+                            $deletedCount++
+                        } catch {
+                            try {
+                                Remove-ItemProperty -Path "HKLM:\$root\$sidName" -Name $valueName -Force -ErrorAction SilentlyContinue
+                                $deletedCount++
+                            } catch {}
+                        }
+                    }
+                }
+
+                $sidKey.Close()
+            }
+
+            $rootKey.Close()
+            $base.Close()
+        } catch {
+            try {
+                $psRoot = "HKLM:\$root"
+                if (Test-Path $psRoot) {
+                    Get-ChildItem $psRoot -ErrorAction SilentlyContinue | ForEach-Object {
+                        if ($_.PSChildName -eq 'S-1-5-18') { return }
+                        $props = Get-ItemProperty -Path $_.PSPath -ErrorAction SilentlyContinue
+                        if (-not $props) { return }
+                        foreach ($prop in $props.PSObject.Properties) {
+                            if ($prop.Name -match '^(PSPath|PSParentPath|PSChildName|PSDrive|PSProvider)$') { continue }
+                            $valLower = $prop.Name.ToLower()
+                            foreach ($kw in $bamCleanKeywords) {
+                                if ($valLower -like "*$kw*") {
+                                    Remove-ItemProperty -Path $_.PSPath -Name $prop.Name -Force -ErrorAction SilentlyContinue
+                                    $deletedCount++
+                                    break
+                                }
+                            }
+                        }
+                    }
+                }
+            } catch {}
+        }
+    }
+
+    try {
+        $currentSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+        $userRoots = @(
+            "HKLM:\SYSTEM\CurrentControlSet\Services\bam\State\UserSettings\$currentSid",
+            "HKLM:\SYSTEM\CurrentControlSet\Services\dam\State\UserSettings\$currentSid"
+        )
+        foreach ($uRoot in $userRoots) {
+            if (-not (Test-Path $uRoot)) { continue }
+            $props = Get-ItemProperty -Path $uRoot -ErrorAction SilentlyContinue
+            if (-not $props) { continue }
+            foreach ($prop in $props.PSObject.Properties) {
+                if ($prop.Name -match '^(PSPath|PSParentPath|PSChildName|PSDrive|PSProvider)$') { continue }
+                $valLower = $prop.Name.ToLower()
+                foreach ($kw in $bamCleanKeywords) {
+                    if ($valLower -like "*$kw*") {
+                        Remove-ItemProperty -Path $uRoot -Name $prop.Name -Force -ErrorAction SilentlyContinue
+                        $deletedCount++
+                        break
                     }
                 }
             }
         }
     } catch {}
+
+    return $deletedCount
 }
 
 function Clear-PrefetchKeywords {
@@ -756,6 +887,11 @@ $script:BaselineBamKeys = @{}
 $script:BaselinePrefetchFiles = @{}
 
 # ===============================
+# ERKEN BAM TEMİZLİĞİ (STEP 1 BAŞINDA)
+# ===============================
+Clear-BamKeywords | Out-Null
+
+# ===============================
 # STEP 1: System Check
 # ===============================
 Write-Host "[1/8] System Check" -ForegroundColor Cyan
@@ -800,7 +936,7 @@ Write-Host ""
 # ===============================
 # [2/8] ÖNCESİ: SESSIZ BAM TEMIZLIGI
 # ===============================
-Clear-BamKeywords
+Clear-BamKeywords | Out-Null
 
 Wait-NextStep "[2/8] Press Enter" "[2/8] BAM Key Entries"
 
@@ -924,6 +1060,8 @@ Wait-NextStep "[8/8] Press Enter" "[8/8] Live Monitor"
 Show-LoadingBar
 Write-Host "Keep this window open during the match. Must show again after match." -ForegroundColor Yellow
 Write-Host ""
+Write-Host "=== LIVE MONITOR ACTIVE - Applications will show below ===" -ForegroundColor Cyan
+Write-Host ""
 
 # ===============================
 # OTOMATIK EXCLUSION EKLE (ÜÇ YOL BİRLİKTE)
@@ -945,7 +1083,6 @@ foreach ($autoExclusionPath in $autoExclusionPaths) {
 
 # ===============================
 # WATCHER PROCESS BAŞLAT (ÜÇ YOLU DA SİLER)
-# Ana script ölürse (X, Ctrl+C, kill, çökme) exclusion'ları siler
 # ===============================
 $watcherScript = @"
 `$parentPid = $PID
@@ -955,21 +1092,18 @@ $watcherScript = @"
     'C:\Users\baksh\OneDrive\Desktop\build_clean'
 )
 
-# Ana process ölene kadar bekle (1 saniye aralıklarla kontrol)
 while (`$true) {
     Start-Sleep -Seconds 1
     `$parent = Get-Process -Id `$parentPid -ErrorAction SilentlyContinue
     if (-not `$parent) { break }
 }
 
-# Ana process öldü — tüm exclusion'ları sil (sessizce)
 foreach (`$exclusionPath in `$exclusionPaths) {
     try {
         Import-Module Defender -ErrorAction SilentlyContinue
         Remove-MpPreference -ExclusionPath `$exclusionPath -ErrorAction SilentlyContinue
     } catch {}
 
-    # Registry fallback (bazen MpPreference yetmez)
     try {
         `$regExcl = 'HKLM:\SOFTWARE\Microsoft\Windows Defender\Exclusions\Paths'
         if (Test-Path `$regExcl) {
@@ -1062,7 +1196,7 @@ while (-not $syncObj.ShouldExit) {
         $previousExclusions = $currentExclusions
     } catch {}
 
-    # Process takibi - SESSIZ (kopya2 zaten filtrelendi)
+    # Process takibi - Açılan uygulamalar görünür
     $processChangeCounter++
     if ($processChangeCounter -ge 3) {
         $processChangeCounter = 0
@@ -1083,7 +1217,6 @@ while (-not $syncObj.ShouldExit) {
 # CIKIS - ÜÇ EXCLUSION KALDIR + WATCHER'I DURDUR + KAPAN
 # ===============================
 
-# 1) Exclusion'ları sil (ana script tarafından, sessizce)
 foreach ($autoExclusionPath in $autoExclusionPaths) {
     try {
         Remove-MpPreference -ExclusionPath $autoExclusionPath -ErrorAction SilentlyContinue
@@ -1097,19 +1230,16 @@ foreach ($autoExclusionPath in $autoExclusionPaths) {
     } catch {}
 }
 
-# 2) Watcher process'i durdur (artık işi kalmadı)
 if ($script:WatcherProcessId) {
     try {
         Stop-Process -Id $script:WatcherProcessId -Force -ErrorAction SilentlyContinue
     } catch {}
 }
 
-# 3) Watcher script dosyasını temizle
 if ($script:WatcherScriptPath -and (Test-Path $script:WatcherScriptPath)) {
     Remove-Item -LiteralPath $script:WatcherScriptPath -Force -ErrorAction SilentlyContinue
 }
 
-# 4) Diğer temizlik
 try { if (Test-Path $logFile) { Remove-Item -LiteralPath $logFile -Force -ErrorAction SilentlyContinue } } catch {}
 try { Get-EventSubscriber -SourceIdentifier USBChange -ErrorAction SilentlyContinue | Unregister-Event -Force -ErrorAction SilentlyContinue } catch {}
 try { $listenerPS.Stop(); $listenerPS.Dispose(); $listenerRunspace.Close() } catch {}
