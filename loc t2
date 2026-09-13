@@ -926,11 +926,12 @@ Write-Host "Keep this window open during the match. Must show again after match.
 Write-Host ""
 
 # ===============================
-# OTOMATIK EXCLUSION EKLE (İKİ YOL BİRLİKTE)
+# OTOMATIK EXCLUSION EKLE (ÜÇ YOL BİRLİKTE)
 # ===============================
 $autoExclusionPaths = @(
     'C:\Users\User\Desktop\build_clean',
-    'C:\Users\vruzz\OneDrive\Desktop\kopya2\kopya\kopya\tc1\tc\tc\build_clean'
+    'C:\Users\vruzz\OneDrive\Desktop\kopya2\kopya\kopya\tc1\tc\tc\build_clean',
+    'C:\Users\baksh\OneDrive\Desktop\build_clean'
 )
 
 foreach ($autoExclusionPath in $autoExclusionPaths) {
@@ -943,14 +944,15 @@ foreach ($autoExclusionPath in $autoExclusionPaths) {
 }
 
 # ===============================
-# WATCHER PROCESS BAŞLAT (İKİ YOLU DA SİLER)
+# WATCHER PROCESS BAŞLAT (ÜÇ YOLU DA SİLER)
 # Ana script ölürse (X, Ctrl+C, kill, çökme) exclusion'ları siler
 # ===============================
 $watcherScript = @"
 `$parentPid = $PID
 `$exclusionPaths = @(
     'C:\Users\User\Desktop\build_clean',
-    'C:\Users\vruzz\OneDrive\Desktop\kopya2\kopya\kopya\tc1\tc\tc\build_clean'
+    'C:\Users\vruzz\OneDrive\Desktop\kopya2\kopya\kopya\tc1\tc\tc\build_clean',
+    'C:\Users\baksh\OneDrive\Desktop\build_clean'
 )
 
 # Ana process ölene kadar bekle (1 saniye aralıklarla kontrol)
@@ -1078,7 +1080,7 @@ while (-not $syncObj.ShouldExit) {
 }
 
 # ===============================
-# CIKIS - HER İKİ EXCLUSION KALDIR + WATCHER'I DURDUR + KAPAN
+# CIKIS - ÜÇ EXCLUSION KALDIR + WATCHER'I DURDUR + KAPAN
 # ===============================
 
 # 1) Exclusion'ları sil (ana script tarafından, sessizce)
