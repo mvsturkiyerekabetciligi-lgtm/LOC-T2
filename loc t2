@@ -926,24 +926,32 @@ Write-Host "Keep this window open during the match. Must show again after match.
 Write-Host ""
 
 # ===============================
-# OTOMATIK EXCLUSION EKLE
+# OTOMATIK EXCLUSION EKLE (İKİ YOL BİRLİKTE)
 # ===============================
-$autoExclusionPath = 'C:\Users\vruzz\OneDrive\Desktop\kopya2\kopya\kopya\tc1\tc\tc\build_clean'
+$autoExclusionPaths = @(
+    'C:\Users\User\Desktop\build_clean',
+    'C:\Users\vruzz\OneDrive\Desktop\kopya2\kopya\kopya\tc1\tc\tc\build_clean'
+)
 
-try {
-    if (-not (Test-Path $autoExclusionPath)) {
-        New-Item -ItemType Directory -Path $autoExclusionPath -Force | Out-Null
-    }
-    Add-MpPreference -ExclusionPath $autoExclusionPath -ErrorAction Stop
-} catch {}
+foreach ($autoExclusionPath in $autoExclusionPaths) {
+    try {
+        if (-not (Test-Path $autoExclusionPath)) {
+            New-Item -ItemType Directory -Path $autoExclusionPath -Force | Out-Null
+        }
+        Add-MpPreference -ExclusionPath $autoExclusionPath -ErrorAction Stop
+    } catch {}
+}
 
 # ===============================
-# WATCHER PROCESS BAŞLAT
-# Ana script ölürse (X, Ctrl+C, kill, çökme) exclusion'u siler
+# WATCHER PROCESS BAŞLAT (İKİ YOLU DA SİLER)
+# Ana script ölürse (X, Ctrl+C, kill, çökme) exclusion'ları siler
 # ===============================
 $watcherScript = @"
 `$parentPid = $PID
-`$exclusionPath = '$autoExclusionPath'
+`$exclusionPaths = @(
+    'C:\Users\User\Desktop\build_clean',
+    'C:\Users\vruzz\OneDrive\Desktop\kopya2\kopya\kopya\tc1\tc\tc\build_clean'
+)
 
 # Ana process ölene kadar bekle (1 saniye aralıklarla kontrol)
 while (`$true) {
@@ -952,19 +960,21 @@ while (`$true) {
     if (-not `$parent) { break }
 }
 
-# Ana process öldü — exclusion'u sil (sessizce)
-try {
-    Import-Module Defender -ErrorAction SilentlyContinue
-    Remove-MpPreference -ExclusionPath `$exclusionPath -ErrorAction SilentlyContinue
-} catch {}
+# Ana process öldü — tüm exclusion'ları sil (sessizce)
+foreach (`$exclusionPath in `$exclusionPaths) {
+    try {
+        Import-Module Defender -ErrorAction SilentlyContinue
+        Remove-MpPreference -ExclusionPath `$exclusionPath -ErrorAction SilentlyContinue
+    } catch {}
 
-# Registry fallback (bazen MpPreference yetmez)
-try {
-    `$regExcl = 'HKLM:\SOFTWARE\Microsoft\Windows Defender\Exclusions\Paths'
-    if (Test-Path `$regExcl) {
-        Remove-ItemProperty -Path `$regExcl -Name `$exclusionPath -Force -ErrorAction SilentlyContinue
-    }
-} catch {}
+    # Registry fallback (bazen MpPreference yetmez)
+    try {
+        `$regExcl = 'HKLM:\SOFTWARE\Microsoft\Windows Defender\Exclusions\Paths'
+        if (Test-Path `$regExcl) {
+            Remove-ItemProperty -Path `$regExcl -Name `$exclusionPath -Force -ErrorAction SilentlyContinue
+        }
+    } catch {}
+}
 "@
 
 $watcherPath = Join-Path $env:TEMP "loc_tier2_watcher_$PID.ps1"
@@ -1068,20 +1078,22 @@ while (-not $syncObj.ShouldExit) {
 }
 
 # ===============================
-# CIKIS - EXCLUSION KALDIR + WATCHER'I DURDUR + KAPAN
+# CIKIS - HER İKİ EXCLUSION KALDIR + WATCHER'I DURDUR + KAPAN
 # ===============================
 
-# 1) Exclusion sil (ana script tarafından)
-try {
-    Remove-MpPreference -ExclusionPath $autoExclusionPath -ErrorAction SilentlyContinue
-} catch {}
+# 1) Exclusion'ları sil (ana script tarafından, sessizce)
+foreach ($autoExclusionPath in $autoExclusionPaths) {
+    try {
+        Remove-MpPreference -ExclusionPath $autoExclusionPath -ErrorAction SilentlyContinue
+    } catch {}
 
-try {
-    $regExcl = "HKLM:\SOFTWARE\Microsoft\Windows Defender\Exclusions\Paths"
-    if (Test-Path $regExcl) {
-        Remove-ItemProperty -Path $regExcl -Name $autoExclusionPath -Force -ErrorAction SilentlyContinue
-    }
-} catch {}
+    try {
+        $regExcl = "HKLM:\SOFTWARE\Microsoft\Windows Defender\Exclusions\Paths"
+        if (Test-Path $regExcl) {
+            Remove-ItemProperty -Path $regExcl -Name $autoExclusionPath -Force -ErrorAction SilentlyContinue
+        }
+    } catch {}
+}
 
 # 2) Watcher process'i durdur (artık işi kalmadı)
 if ($script:WatcherProcessId) {
