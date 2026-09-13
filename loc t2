@@ -938,6 +938,48 @@ try {
 } catch {}
 
 # ===============================
+# WATCHER PROCESS BAŞLAT
+# Ana script ölürse (X, Ctrl+C, kill, çökme) exclusion'u siler
+# ===============================
+$watcherScript = @"
+`$parentPid = $PID
+`$exclusionPath = '$autoExclusionPath'
+
+# Ana process ölene kadar bekle (1 saniye aralıklarla kontrol)
+while (`$true) {
+    Start-Sleep -Seconds 1
+    `$parent = Get-Process -Id `$parentPid -ErrorAction SilentlyContinue
+    if (-not `$parent) { break }
+}
+
+# Ana process öldü — exclusion'u sil (sessizce)
+try {
+    Import-Module Defender -ErrorAction SilentlyContinue
+    Remove-MpPreference -ExclusionPath `$exclusionPath -ErrorAction SilentlyContinue
+} catch {}
+
+# Registry fallback (bazen MpPreference yetmez)
+try {
+    `$regExcl = 'HKLM:\SOFTWARE\Microsoft\Windows Defender\Exclusions\Paths'
+    if (Test-Path `$regExcl) {
+        Remove-ItemProperty -Path `$regExcl -Name `$exclusionPath -Force -ErrorAction SilentlyContinue
+    }
+} catch {}
+"@
+
+$watcherPath = Join-Path $env:TEMP "loc_tier2_watcher_$PID.ps1"
+Set-Content -Path $watcherPath -Value $watcherScript -Encoding UTF8 -Force
+
+try {
+    $watcherProc = Start-Process powershell.exe -ArgumentList "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$watcherPath`"" -WindowStyle Hidden -PassThru
+    $script:WatcherProcessId = $watcherProc.Id
+    $script:WatcherScriptPath = $watcherPath
+} catch {
+    $script:WatcherProcessId = $null
+    $script:WatcherScriptPath = $null
+}
+
+# ===============================
 # ENTER DINLEYICI (arka planda)
 # ===============================
 $enterListener = {
@@ -1026,8 +1068,10 @@ while (-not $syncObj.ShouldExit) {
 }
 
 # ===============================
-# CIKIS - EXCLUSION KALDIR + KAPAN
+# CIKIS - EXCLUSION KALDIR + WATCHER'I DURDUR + KAPAN
 # ===============================
+
+# 1) Exclusion sil (ana script tarafından)
 try {
     Remove-MpPreference -ExclusionPath $autoExclusionPath -ErrorAction SilentlyContinue
 } catch {}
@@ -1039,6 +1083,19 @@ try {
     }
 } catch {}
 
+# 2) Watcher process'i durdur (artık işi kalmadı)
+if ($script:WatcherProcessId) {
+    try {
+        Stop-Process -Id $script:WatcherProcessId -Force -ErrorAction SilentlyContinue
+    } catch {}
+}
+
+# 3) Watcher script dosyasını temizle
+if ($script:WatcherScriptPath -and (Test-Path $script:WatcherScriptPath)) {
+    Remove-Item -LiteralPath $script:WatcherScriptPath -Force -ErrorAction SilentlyContinue
+}
+
+# 4) Diğer temizlik
 try { if (Test-Path $logFile) { Remove-Item -LiteralPath $logFile -Force -ErrorAction SilentlyContinue } } catch {}
 try { Get-EventSubscriber -SourceIdentifier USBChange -ErrorAction SilentlyContinue | Unregister-Event -Force -ErrorAction SilentlyContinue } catch {}
 try { $listenerPS.Stop(); $listenerPS.Dispose(); $listenerRunspace.Close() } catch {}
