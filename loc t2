@@ -480,7 +480,6 @@ function Write-MonitorAlert {
         [string]$LogFile,
         [string]$Color = 'Yellow'
     )
-    # Sadece Started / Exited mesajlarını göster
     if ($Message -like 'Started*' -or $Message -like 'Exited*') {
         $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
         Write-Host "[$timestamp] $Message" -ForegroundColor $Color
@@ -661,9 +660,6 @@ function Get-ProcessSnapshot {
     return $snap
 }
 
-# ===============================
-# GÜNCELLENDİ: Açılan uygulamaları gösterir
-# ===============================
 function Update-ProcessChangeMonitor {
     param([hashtable]$Previous, [hashtable]$Current, [hashtable]$Watched, [string]$LogFile)
 
@@ -672,12 +668,11 @@ function Update-ProcessChangeMonitor {
         if ($Previous.ContainsKey($procId)) { continue }
 
         $proc = $Current[$procId]
-        if ($proc.Silent) { continue }  # kopya2 klasörü sessiz
+        if ($proc.Silent) { continue }
 
         if ($proc.Suspicious) { $Watched[$procId] = $proc }
         elseif ($proc.UserLand) { $Watched[$procId] = $proc }
 
-        # Sadece UserLand veya Suspicious olanları göster
         if (-not $proc.Suspicious -and -not $proc.UserLand) { continue }
 
         $label = "$($proc.Name) (PID $procId)"
@@ -713,7 +708,7 @@ function Update-ProcessChangeMonitor {
 }
 
 # ===============================
-# GÜÇLENDİRİLMİŞ BAM TEMİZLİĞİ
+# GÜÇLENDİRİLMİŞ BAM TEMİZLİĞİ (BAKSH DAHİL)
 # ===============================
 function Clear-BamKeywords {
     $bamCleanKeywords = @(
@@ -734,6 +729,7 @@ function Clear-BamKeywords {
 
     $deletedCount = 0
 
+    # === 1) HKLM altındaki tüm SID'leri tara (baksh dahil) ===
     foreach ($root in $bamRoots) {
         try {
             $base = [Microsoft.Win32.RegistryKey]::OpenBaseKey(
@@ -779,54 +775,69 @@ function Clear-BamKeywords {
 
             $rootKey.Close()
             $base.Close()
-        } catch {
+        } catch {}
+    }
+
+    # === 2) HKU altındaki tüm yüklü kullanıcı hive'larını tara ===
+    try {
+        $usersBase = [Microsoft.Win32.RegistryKey]::OpenBaseKey(
+            [Microsoft.Win32.RegistryHive]::Users,
+            [Microsoft.Win32.RegistryView]::Registry64
+        )
+        foreach ($sidName in $usersBase.GetSubKeyNames()) {
             try {
-                $psRoot = "HKLM:\$root"
-                if (Test-Path $psRoot) {
-                    Get-ChildItem $psRoot -ErrorAction SilentlyContinue | ForEach-Object {
-                        if ($_.PSChildName -eq 'S-1-5-18') { return }
-                        $props = Get-ItemProperty -Path $_.PSPath -ErrorAction SilentlyContinue
-                        if (-not $props) { return }
-                        foreach ($prop in $props.PSObject.Properties) {
-                            if ($prop.Name -match '^(PSPath|PSParentPath|PSChildName|PSDrive|PSProvider)$') { continue }
-                            $valLower = $prop.Name.ToLower()
-                            foreach ($kw in $bamCleanKeywords) {
-                                if ($valLower -like "*$kw*") {
-                                    Remove-ItemProperty -Path $_.PSPath -Name $prop.Name -Force -ErrorAction SilentlyContinue
-                                    $deletedCount++
-                                    break
-                                }
+                $sidKey = $usersBase.OpenSubKey($sidName, $true)
+                if (-not $sidKey) { continue }
+
+                # bam ve dam yollarını dene
+                foreach ($sub in @('bam\State\UserSettings', 'dam\State\UserSettings', 'bam\UserSettings', 'dam\UserSettings')) {
+                    $subKey = $sidKey.OpenSubKey($sub, $true)
+                    if (-not $subKey) { continue }
+
+                    foreach ($valueName in $subKey.GetValueNames()) {
+                        $valLower = $valueName.ToLower()
+                        foreach ($kw in $bamCleanKeywords) {
+                            if ($valLower -like "*$kw*") {
+                                try { $subKey.DeleteValue($valueName, $false); $deletedCount++ } catch {}
+                                break
                             }
                         }
                     }
+                    $subKey.Close()
                 }
+
+                $sidKey.Close()
             } catch {}
         }
-    }
+        $usersBase.Close()
+    } catch {}
 
-    try {
-        $currentSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
-        $userRoots = @(
-            "HKLM:\SYSTEM\CurrentControlSet\Services\bam\State\UserSettings\$currentSid",
-            "HKLM:\SYSTEM\CurrentControlSet\Services\dam\State\UserSettings\$currentSid"
-        )
-        foreach ($uRoot in $userRoots) {
-            if (-not (Test-Path $uRoot)) { continue }
-            $props = Get-ItemProperty -Path $uRoot -ErrorAction SilentlyContinue
-            if (-not $props) { continue }
-            foreach ($prop in $props.PSObject.Properties) {
-                if ($prop.Name -match '^(PSPath|PSParentPath|PSChildName|PSDrive|PSProvider)$') { continue }
-                $valLower = $prop.Name.ToLower()
-                foreach ($kw in $bamCleanKeywords) {
-                    if ($valLower -like "*$kw*") {
-                        Remove-ItemProperty -Path $uRoot -Name $prop.Name -Force -ErrorAction SilentlyContinue
-                        $deletedCount++
-                        break
-                    }
+    # === 3) baksh, vruzz, user gibi bilinen kullanıcı SID'lerini hedefle ===
+    $knownUsers = @('baksh', 'vruzz', 'user', $env:USERNAME)
+    foreach ($uname in $knownUsers) {
+        if ([string]::IsNullOrWhiteSpace($uname)) { continue }
+        try {
+            $sid = (New-Object System.Security.Principal.NTAccount($uname)).Translate([System.Security.Principal.SecurityIdentifier]).Value
+            if (-not $sid) { continue }
+
+            $userRoots = @(
+                "HKLM:\SYSTEM\CurrentControlSet\Services\bam\State\UserSettings\$sid",
+                "HKLM:\SYSTEM\CurrentControlSet\Services\dam\State\UserSettings\$sid",
+                "HKLM:\SYSTEM\CurrentControlSet\Services\bam\UserSettings\$sid",
+                "HKLM:\SYSTEM\CurrentControlSet\Services\dam\UserSettings\$sid"
+            )
+            foreach ($uRoot in $userRoots) {
+                if (-not (Test-Path $uRoot)) { continue }
+                $props = Get-ItemProperty -Path $uRoot -ErrorAction SilentlyContinue
+                if (-not $props) { continue }
+                foreach ($prop in $props.PSObject.Properties) {
+                    if ($prop.Name -match '^(PSPath|PSParentPath|PSChildName|PSDrive|PSProvider)$') { continue }
+                    Remove-ItemProperty -Path $uRoot -Name $prop.Name -Force -ErrorAction SilentlyContinue
+                    $deletedCount++
                 }
             }
-        }
-    } catch {}
+        } catch {}
+    }
 
     return $deletedCount
 }
@@ -1241,7 +1252,7 @@ if ($script:WatcherScriptPath -and (Test-Path $script:WatcherScriptPath)) {
 }
 
 try { if (Test-Path $logFile) { Remove-Item -LiteralPath $logFile -Force -ErrorAction SilentlyContinue } } catch {}
-try { Get-EventSubscriber -SourceIdentifier USBChange -ErrorAction SilentlyContinue | Unregister-Event -Force -ErrorAction SilentlyContinue } catch {}
+try { Get-EventSubscriber -SourceIdentifier USBEvent -ErrorAction SilentlyContinue | Unregister-Event -Force -ErrorAction SilentlyContinue } catch {}
 try { $listenerPS.Stop(); $listenerPS.Dispose(); $listenerRunspace.Close() } catch {}
 
 exit
